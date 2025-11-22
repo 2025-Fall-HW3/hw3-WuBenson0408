@@ -71,6 +71,82 @@ class MyPortfolio:
         TODO: Complete Task 4 Below
         """
         
+        # Rolling returns for assets (exclude SPY)
+        asset_returns = self.returns[assets]
+
+        # Momentum: past lookback-day total return
+        # price_t / price_{t-L} - 1
+        momentum = (
+            self.price[assets] / self.price[assets].shift(self.lookback) - 1
+        )
+
+        # Volatility: rolling std of returns
+        volatility = asset_returns.rolling(self.lookback).std()
+
+        # Trend filter on SPY: 200-day moving average
+        spy_price = self.price[self.exclude]
+        spy_ma_200 = spy_price.rolling(200).mean()
+
+        # Parameters
+        max_weight_per_asset = 0.3       
+        risk_off_scale = 0.4             
+        defensive_sectors = ["XLP", "XLU", "XLV"]  
+
+        for date in self.price.index:
+            w = pd.Series(0.0, index=self.price.columns)
+
+            if (
+                date not in momentum.index
+                or date not in volatility.index
+                or pd.isna(momentum.loc[date]).all()
+                or pd.isna(volatility.loc[date]).all()
+            ):
+                self.portfolio_weights.loc[date] = np.nan
+                continue
+
+            mom_t = momentum.loc[date]
+            vol_t = volatility.loc[date]
+
+            vol_t = vol_t.replace(0, np.nan)
+
+            pos_mask = mom_t > 0
+            if pos_mask.any():
+                mom_pos = mom_t.where(pos_mask, 0.0)
+                score = mom_pos / vol_t
+                score = score.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+                if score.sum() > 0:
+                    raw_weights = score / score.sum()
+                else:
+                    raw_weights = pd.Series(0.0, index=assets)
+            else:
+                raw_weights = pd.Series(0.0, index=assets)
+                valid_defensive = [a for a in defensive_sectors if a in assets]
+                if len(valid_defensive) > 0:
+                    eq_w = 1.0 / len(valid_defensive)
+                    for a in valid_defensive:
+                        raw_weights[a] = eq_w
+
+            capped = raw_weights.clip(upper=max_weight_per_asset)
+            total_after_cap = capped.sum()
+
+            if total_after_cap > 0:
+                alloc_weights = capped / total_after_cap
+            else:
+                alloc_weights = raw_weights 
+
+            for a in assets:
+                w[a] = alloc_weights.get(a, 0.0)
+            w[self.exclude] = 0.0
+
+            if not pd.isna(spy_ma_200.loc[date]) and spy_price.loc[date] < spy_ma_200.loc[date]:
+                w = w * risk_off_scale
+
+            total_w = w.sum()
+            if total_w > 1.0:
+                w = w / total_w
+
+            self.portfolio_weights.loc[date] = w
         
         """
         TODO: Complete Task 4 Above
